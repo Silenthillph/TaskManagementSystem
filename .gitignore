@@ -394,5 +394,9 @@ FodyWeavers.xsd
 *.msm
 *.msp
 
+# Ignore build output directories
+**/bin/
+**/obj/
+
 # JetBrains Rider
 *.sln.iml
