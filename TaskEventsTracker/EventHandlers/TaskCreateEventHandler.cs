@@ -8,9 +8,6 @@ public class TaskCreateEventHandler(IEventBus eventBus) : IEventHandler<TaskCrea
     public Task Handle(TaskCreateEvent @event)
     {
         Console.WriteLine($"Task created: Id: {@event.TaskId}, Name: {@event.TaskName}, Description: {@event.TaskDescription}");
-        
-        eventBus.Publish(new TaskCreateEvent(@event.TaskId, @event.TaskName, @event.TaskDescription));
-        
         return Task.CompletedTask;
     }
 }

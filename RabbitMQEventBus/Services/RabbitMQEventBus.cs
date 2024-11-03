@@ -1,8 +1,6 @@
 ﻿using System.Text;
-using Domain.Core.Commands;
 using Domain.Core.EventBus;
 using Domain.Core.Events;
-using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Polly;
@@ -15,20 +13,16 @@ namespace MessagingService;
 public sealed class RabbitMQEventBus : IEventBus
     {
         private readonly IServiceScopeFactory _serviceScopeFactory;
-        private readonly Lazy<Task> _lazyConnectionInitializer;
-        
-        private IConnection _connection;
-        private IChannel _channel;
+        private readonly IRabbitMQConnectionService _connectionService;
         private readonly AsyncRetryPolicy _retryPolicy;
         
         private readonly Dictionary<string, List<Type>> _handlers = new();
         private readonly List<Type> _eventTypes = new();
 
-        public RabbitMQEventBus(IServiceScopeFactory serviceScopeFactory)
+        public RabbitMQEventBus(IServiceScopeFactory serviceScopeFactory, IRabbitMQConnectionService connectionService)
         {
             _serviceScopeFactory = serviceScopeFactory;
-            _lazyConnectionInitializer = new Lazy<Task>(InitializeConnectionAsync);
-
+            _connectionService = connectionService;
             _retryPolicy = Policy
                 .Handle<Exception>()
                 .WaitAndRetryAsync(2, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
@@ -38,35 +32,26 @@ public sealed class RabbitMQEventBus : IEventBus
                             $"Retry {retryCount} after {timeSpan.TotalSeconds} seconds due to: {exception.Message}");
                     });
         }
-
-        private async Task InitializeConnectionAsync()
-        {
-            var factory = new ConnectionFactory { HostName = "localhost" };
-            _connection = await factory.CreateConnectionAsync();
-            _channel = await _connection.CreateChannelAsync();
-        }
         
         public async Task Publish<T>(T @event) where T : Event
         {
-            await EnsureConnectionInitialized();
+            var channel = await _connectionService.GetChannelAsync();
 
             var eventName = @event.GetType().Name;
-            await _channel.QueueDeclareAsync(eventName, durable: false, exclusive: false, autoDelete: false);
+            await channel.QueueDeclareAsync(eventName, durable: false, exclusive: false, autoDelete: false);
 
             var message = JsonConvert.SerializeObject(@event);
             var body = Encoding.UTF8.GetBytes(message);
 
             await _retryPolicy.ExecuteAsync(async () =>
             {
-                await _channel.QueueDeclareAsync(eventName, durable: false, exclusive: false, autoDelete: false);
-                await _channel.BasicPublishAsync("", eventName, false, body);
+                await channel.QueueDeclareAsync(eventName, durable: false, exclusive: false, autoDelete: false);
+                await channel.BasicPublishAsync("", eventName, false, body);
             });
         }
 
         public async Task Subscribe<T, TH>() where T : Event where TH : IEventHandler<T>
         {
-            await EnsureConnectionInitialized();
-
             var eventName = typeof(T).Name;
             var handlerType = typeof(TH);
 
@@ -92,9 +77,11 @@ public sealed class RabbitMQEventBus : IEventBus
 
         private async Task StartBasicConsume(string eventName)
         {
-            await _channel.QueueDeclareAsync(eventName, durable: false, exclusive: false, autoDelete: false);
+            var channel = await _connectionService.GetChannelAsync();
+            
+            await channel.QueueDeclareAsync(eventName, durable: false, exclusive: false, autoDelete: false);
 
-            var consumer = new AsyncEventingBasicConsumer(_channel);
+            var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += async (sender, e) =>
             {
                 var message = Encoding.UTF8.GetString(e.Body.ToArray());
@@ -104,7 +91,7 @@ public sealed class RabbitMQEventBus : IEventBus
                     try
                     {
                         await ProcessEvent(eventName, message);
-                        await _channel.BasicAckAsync(e.DeliveryTag, false);
+                        await channel.BasicAckAsync(e.DeliveryTag, false);
                     }
                     catch (Exception ex)
                     {
@@ -114,7 +101,7 @@ public sealed class RabbitMQEventBus : IEventBus
                 });
             };
 
-            await _channel.BasicConsumeAsync(eventName, autoAck: false, consumer);
+            await channel.BasicConsumeAsync(eventName, autoAck: false, consumer);
         }
 
         private async Task ProcessEvent(string eventName, string message)
@@ -136,10 +123,5 @@ public sealed class RabbitMQEventBus : IEventBus
                     await (Task)concreteType.GetMethod("Handle")?.Invoke(handler, [@event])!;
                 }
             }
-        }
-
-        private async Task EnsureConnectionInitialized()
-        {
-            await _lazyConnectionInitializer.Value;
         }
     }

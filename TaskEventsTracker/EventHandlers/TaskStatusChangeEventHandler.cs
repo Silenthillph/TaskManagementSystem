@@ -12,10 +12,10 @@ public class TaskStatusChangeEventHandler(IMediator mediator) : IEventHandler<Ta
         Console.WriteLine($"Task status updated: Id: {@event.TaskId}, new status: {@event.TaskNewStatus.ToString()}");
 
         // check if retry policy works
-        if (@event.TaskId % 2 == 0)
-        {
-            throw new Exception();
-        }
+        // if (@event.TaskId % 2 == 0)
+        // {
+        //     throw new Exception();
+        // }
         
         mediator.Send(new TaskStatusChangeActionCommand(@event.TaskId));
         
